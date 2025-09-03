@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>YouTube Shorts Swipe</title>
   <style>
     html, body {
@@ -11,6 +12,8 @@
       width: 100vw;
       height: 100vh;
       overflow: hidden;
+      touch-action: none; /* Ngăn chặn hành vi mặc định trên mobile */
+      -webkit-overflow-scrolling: touch; /* Cuộn mượt trên iOS */
     }
     #shorts-container {
       width: 100vw;
@@ -28,6 +31,10 @@
       align-items: center;
       z-index: 9999;
       scroll-snap-type: y mandatory; 
+      scrollbar-width: none; /* Ẩn thanh cuộn trên Firefox */
+    }
+    #shorts-container::-webkit-scrollbar {
+      display: none; /* Ẩn thanh cuộn trên Chrome */
     }
     .short {
       width: 100%;
@@ -44,6 +51,16 @@
       border: none;
       background: #000;
       display: block;
+    }
+    .loading-placeholder {
+      width: 100%;
+      height: 100%;
+      background-color: #222;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      color: white;
+      font-family: Arial, sans-serif;
     }
   </style>
 </head>
@@ -546,7 +563,8 @@
     const shorts = document.querySelectorAll('.short');
     let currentIndex = 0;
     let startY = 0;
-    let isTouch = false;
+    let isScrolling = false;
+    let scrollTimeout;
 
     // --- Play time tracking ---
     const playTimes = Array(shorts.length).fill(0); // ms
@@ -564,40 +582,59 @@
     function onYouTubeIframeAPIReady() {
       shorts.forEach((short, i) => {
         const iframe = short.querySelector('iframe');
-        ytPlayers[i] = new YT.Player(iframe.id, {
-          events: {
-            'onReady': (event) => {
-              const duration = event.target.getDuration();
-              console.log(`Video ${i} duration: ${duration}s`);
+        if (iframe && iframe.src) { // Chỉ khởi tạo player nếu iframe đã có src
+          ytPlayers[i] = new YT.Player(iframe.id, {
+            events: {
+              'onReady': (event) => {
+                const duration = event.target.getDuration();
+                console.log(`Video ${i} duration: ${duration}s`);
+              }
             }
-          }
-        });
+          });
+        }
       });
     }
 
-    // --- Touch events (mobile & touchpad) ---
-    document.addEventListener('touchstart', (e) => {
-      console.log('Touch start detected');
-      isTouch = true;
+    // --- Cải tiến touch events cho mobile ---
+    const container = document.getElementById('shorts-container');
+    
+    // Ngăn hành vi mặc định để tránh xung đột
+    container.addEventListener('touchmove', (e) => {
+      if (e.touches.length === 1) { // Chỉ xử lý khi có một ngón tay
+        e.preventDefault();
+      }
+    }, { passive: false });
+
+    container.addEventListener('touchstart', (e) => {
       startY = e.touches[0].clientY;
+      isScrolling = true;
     });
 
-    document.addEventListener('touchend', (e) => {
-      if (!isTouch) return;
-      const endY = e.changedTouches[0].clientY;
-      handleSwipe(endY - startY);
+    container.addEventListener('touchend', (e) => {
+      isScrolling = false;
+    });
+
+    container.addEventListener('touchcancel', (e) => {
+      isScrolling = false;
+    });
+
+    container.addEventListener('scroll', (e) => {
+      // Sử dụng debounce để tránh xử lý quá nhiều lần
+      clearTimeout(scrollTimeout);
+      scrollTimeout = setTimeout(() => {
+        handleScroll();
+      }, 100);
     });
 
     // Mouse events (touchpad swipe)
     let mouseDown = false;
     let mouseStartY = 0;
-    document.addEventListener('mousedown', (e) => {
-      isTouch = false;
+    container.addEventListener('mousedown', (e) => {
       mouseDown = true;
       mouseStartY = e.clientY;
     });
 
-    document.addEventListener('mouseup', (e) => {
+    container.addEventListener('mouseup', (e) => {
       if (!mouseDown) return;
       mouseDown = false;
       const deltaY = e.clientY - mouseStartY;
@@ -605,7 +642,7 @@
     });
 
     // Wheel event (for touchpad two-finger swipe)
-    document.addEventListener('wheel', (e) => {
+    container.addEventListener('wheel', (e) => {
       // Only vertical scroll
       if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && Math.abs(e.deltaY) > 5) {
         handleSwipe(e.deltaY);
@@ -623,57 +660,133 @@
       }
     });
 
-    function handleSwipe(deltaY) {
-      if (isTouch) {
-        // For touch events
-        deltaY = -deltaY; // Invert for touch swipe direction
-      } else if (mouseDown) {
-        // For mouse events
-        deltaY = -deltaY; // Invert for mouse swipe direction
+    function handleScroll() {
+      // Tính index hiện tại dựa trên vị trí scroll
+      const scrollPos = container.scrollTop;
+      const newIndex = Math.round(scrollPos / window.innerHeight);
+      
+      if (newIndex !== currentIndex) {
+        logPlayTime(currentIndex);
+        currentIndex = newIndex;
+        updateActiveVideo();
+        lazyLoadVideos();
       }
-      if (Math.abs(deltaY) > 5) {
+    }
+
+    function handleSwipe(deltaY) {
+      if (Math.abs(deltaY) > 50) {
         if (deltaY < 0 && currentIndex < shorts.length - 1) {
           logPlayTime(currentIndex);
           currentIndex++;
+          scrollToIndex(currentIndex);
         } else if (deltaY > 0 && currentIndex > 0) {
           logPlayTime(currentIndex);
           currentIndex--;
-        }
-        updateShorts();
-      }
-    }
-        function lazyLoad(index) {
-      // Luôn load trước 2 video tiếp theo
-      for (let i = index; i <= index + 2 && i < shorts.length; i++) {
-        const iframe = shorts[i].querySelector('iframe');
-        if (iframe && !iframe.src && iframe.dataset.src) {
-          iframe.src = iframe.dataset.src;
-          delete iframe.dataset.src;
-          console.log(`Lazy loaded video ${i}`);
+          scrollToIndex(currentIndex);
         }
       }
     }
 
+    function scrollToIndex(index) {
+      container.scrollTo({
+        top: index * window.innerHeight,
+        behavior: 'smooth'
+      });
+      updateActiveVideo();
+      lazyLoadVideos();
+    }
 
-        function updateShorts() {
+    // Sử dụng Intersection Observer để lazy load
+    const observerOptions = {
+      root: container,
+      rootMargin: '200px 0px', // Tải trước 200px khi sắp vào viewport
+      threshold: 0.1
+    };
+
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          const index = Array.from(shorts).indexOf(entry.target);
+          loadVideo(index);
+        }
+      });
+    }, observerOptions);
+
+    // Quan sát tất cả các short
+    shorts.forEach(short => {
+      observer.observe(short);
+    });
+
+    function loadVideo(index) {
+      if (index < 0 || index >= shorts.length) return;
+      
+      const iframe = shorts[index].querySelector('iframe');
+      if (iframe && !iframe.src && iframe.dataset.src) {
+        iframe.src = iframe.dataset.src;
+        delete iframe.dataset.src;
+        console.log(`Lazy loaded video ${index}`);
+        
+        // Khởi tạo YT player khi video được load
+        ytPlayers[index] = new YT.Player(iframe.id, {
+          events: {
+            'onReady': (event) => {
+              const duration = event.target.getDuration();
+              console.log(`Video ${index} duration: ${duration}s`);
+            }
+          }
+        });
+      }
+    }
+
+    function lazyLoadVideos() {
+      // Tải video hiện tại và 2 video tiếp theo
+      for (let i = currentIndex; i <= currentIndex + 2 && i < shorts.length; i++) {
+        loadVideo(i);
+      }
+    }
+
+    function updateActiveVideo() {
+      // Dừng tất cả video trước khi phát video hiện tại
       shorts.forEach((short, index) => {
-        short.style.transform = `translateY(${(index - currentIndex) * 100}%)`;
         const iframe = short.querySelector('iframe');
-        if (iframe) {
-          iframe.contentWindow.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
+        if (iframe && iframe.src) {
+          try {
+            iframe.contentWindow.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
+          } catch (e) {
+            console.log("Could not pause video", index);
+          }
         }
       });
 
-      // Lazy load video hiện tại và 2 cái sau
-      lazyLoad(currentIndex);
-
+      // Phát video hiện tại
       const currentIframe = shorts[currentIndex].querySelector('iframe');
-      if (currentIframe) {
-        currentIframe.contentWindow.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
+      if (currentIframe && currentIframe.src) {
+        try {
+          currentIframe.contentWindow.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
+        } catch (e) {
+          console.log("Could not play video", currentIndex);
+        }
       }
+      
       playStart = Date.now();
     }
 
+    // Khởi tạo ban đầu
+    function init() {
+      // Tải 3 video đầu tiên
+      lazyLoadVideos();
+      updateActiveVideo();
+      
+      // Đảm bảo scroll đúng vị trí
+      scrollToIndex(currentIndex);
+    }
+
+    // Gọi init khi trang đã load xong
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', init);
+    } else {
+      init();
+    }
 
     // Log play time when user leaves the page
     window.addEventListener('beforeunload', () => {
